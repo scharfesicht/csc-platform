@@ -83,6 +83,24 @@ class WorkflowTests(unittest.TestCase):
     def test_complete_public_checkout_integrity(self):
         M.verify_checkout(ROOT)
 
+
+    def test_gateway_ingress_isolated_and_persistent(self):
+        # The supplier's gateway attaches only to internal control by default.
+        source = ('services:\n  gateway:\n    networks:\n'
+                  '      control: {ipv4_address: "${CSC_PROXY_IP:?Required}"}\n'
+                  '    ports: ["${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443"]\n'
+                  'networks:\n  control:\n    internal: true\n  egress: {}\n')
+        expected = M.Coordinator.gateway_ingress_compose(source)
+        self.assertIn('  ingress: {driver: bridge, internal: false}', expected)
+        self.assertIn('      ingress: {}', expected)
+        self.assertIn('    internal: true', expected)
+        self.assertEqual(expected, M.Coordinator.gateway_ingress_compose(expected))
+        self.assertEqual(expected.count('      ingress: {}'), 1)
+        self.assertEqual(expected.count('  ingress: {driver: bridge, internal: false}'), 1)
+        self.assertNotIn('    postgres:\n      ingress:', expected)
+        with self.assertRaises(M.SetupError):
+            M.Coordinator.gateway_ingress_compose('networks:\n  control: {}\n')
+
     def test_shell_wrappers_parse(self):
         for path in [*ROOT.glob('*.sh'), ROOT / 'bootstrap/csc-bootstrap.sh']:
             subprocess.run(['bash', '-n', str(path)], check=True)
@@ -329,7 +347,7 @@ class DedicatedHttpsPortTests(unittest.TestCase):
         self.coord.control = self.control
         self.coord.profile_file = self.profile
         self.coord.profile = {}
-        (self.root / 'deploy/compose.yaml').write_text('gateway:\n  ports: ["${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443"]\n')
+        (self.root / 'deploy/compose.yaml').write_text('  gateway:\n    networks:\n      control: {ipv4_address: "${CSC_PROXY_IP:?Required}"}\n    ports: ["${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443"]\nnetworks:\n  control:\n    internal: true\n  egress: {}\n')
 
     def tearDown(self):
         self.tmp.cleanup()

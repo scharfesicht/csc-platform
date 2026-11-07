@@ -481,8 +481,25 @@ class Coordinator:
             raise SetupError('HTTPS port must be 443 or between 1024 and 65535.')
         return value
 
+    @staticmethod
+    def gateway_ingress_compose(source):
+        # Keep control internal: publish gateway HTTPS only through an independent
+        # non-internal ingress bridge. Never attach PostgreSQL/cache to ingress.
+        gateway = '      control: {ipv4_address: "${CSC_PROXY_IP:?Required}"}\n'
+        gateway_with_ingress = gateway + '      ingress: {}\n'
+        ingress_definition = '  ingress: {driver: bridge, internal: false}\n'
+        egress = '  egress: {}\n'
+        if source.count(gateway_with_ingress) == 1 and source.count(ingress_definition) == 1:
+            return source
+        if (source.count(gateway) != 1 or source.count(egress) != 1 or
+                '  ingress:' in source):
+            raise SetupError('Unknown CSC Compose network topology; refusing unsafe ingress modification.')
+        return source.replace(gateway, gateway_with_ingress, 1).replace(
+            egress, egress + ingress_definition, 1)
+
     def approved_compose(self):
-        # Accept only the approved Compose payload plus the one known port substitution.
+        # Compare against exact approved supplier payload plus managed HTTPS port
+        # and managed ingress-network adaptations. Reject all unrelated edits.
         local = self.root / 'deploy/compose.yaml'
         approved = self.stage / 'deploy/compose.yaml'
         if not regular(local) or not regular(approved):
@@ -491,8 +508,15 @@ class Coordinator:
         original = approved.read_text(encoding='utf-8')
         port_token = '${CSC_BIND_ADDRESS:-0.0.0.0}:${CSC_HTTPS_PORT:-443}:8443'
         original_token = '${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443'
-        return current == original or (current.count(port_token) == 1 and
-              current.replace(port_token, original_token, 1) == original)
+        try:
+            ingress = self.gateway_ingress_compose(original)
+        except SetupError:
+            return False
+        variants = (original, ingress)
+        return any(current == variant or (
+            current.count(port_token) == 1 and
+            current.replace(port_token, original_token, 1) == variant
+        ) for variant in variants)
 
     def ensure_https_port(self):
         # Modify only the approved gateway port expression, not app source or secrets.
@@ -507,6 +531,7 @@ class Coordinator:
             if source.count(legacy) != 1:
                 raise SetupError('Unrecognized CSC gateway port mapping; refusing to modify Compose.')
             source = source.replace(legacy, managed, 1)
+        source = self.gateway_ingress_compose(source)
         env_controller = module_at(self.root)
         values = env_controller.env_values()
         previous = int(values.get('CSC_HTTPS_PORT', '443'))
