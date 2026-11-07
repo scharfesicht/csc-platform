@@ -396,7 +396,20 @@ class Coordinator:
             info('Registry account: ' + username)
         if not re.fullmatch('[A-Za-z0-9_.-]{1,100}', username):
             raise SetupError('Invalid registry username.')
-        token = getpass.getpass('Read-only Docker Hub token (hidden): ').strip()
+        fd = getattr(self.args, 'registry_token_fd', None)
+        if fd is None:
+            token = getpass.getpass('Read-only Docker Hub token (hidden): ').strip()
+        else:
+            if fd < 3 or fd > 1024:
+                raise SetupError('Invalid registry credential descriptor.')
+            try:
+                with os.fdopen(os.dup(fd), 'rb', closefd=True) as secret_stream:
+                    token = secret_stream.readline(4097).decode('utf-8').strip()
+            finally:
+                os.close(fd)
+                self.args.registry_token_fd = None
+            if len(token) > 4096:
+                raise SetupError('Registry credential exceeds accepted length.')
         if not token:
             raise SetupError('Registry token cannot be empty.')
         if self.temp_auth:
@@ -591,13 +604,14 @@ class Coordinator:
                 raise SetupError('A CSC database volume already exists but customer configuration is absent. Refusing to generate replacement secrets or initialize over existing data.')
 
     def choices(self):
+        info('STEP 4 — Server Configuration')
+        info('--------------------------------')
         cached = self.profile.get('installation', {})
         hostname = self.args.hostname or ask('Management hostname', cached.get('hostname') or socket.gethostname())
         if len(hostname) > 253 or not all(re.fullmatch('[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', s) for s in hostname.split('.')):
             raise SetupError('Enter a DNS hostname, not a URL.')
-        email = self.args.admin_email or ask('Administrator email', cached.get('admin_email', ''))
-        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
-            raise SetupError('Enter a valid administrator email.')
+        port = self.https_port()
+        info('HTTPS port: ' + str(port))
         cert = self.args.tls_cert or cached.get('tls_cert', '/etc/csc-platform/tls/server.crt')
         key = self.args.tls_key or cached.get('tls_key', '/etc/csc-platform/tls/server.key')
         if not (regular(Path(cert)) and regular(Path(key))):
@@ -644,12 +658,16 @@ class Coordinator:
         bind = self.args.bind_address or cached.get('bind_address', '0.0.0.0')
         if ipaddress.ip_address(bind).version != 4:
             raise SetupError('The HTTPS bind address must be IPv4 for this release.')
-        port = self.https_port()
         with socket.socket() as check:
             try:
                 check.bind((bind, port))
             except OSError:
                 raise SetupError('HTTPS port ' + str(port) + ' is already occupied at ' + bind + '. Existing services were not stopped.') from None
+        info('STEP 5 — Administrator Account')
+        info('--------------------------------')
+        email = self.args.admin_email or ask('Administrator email', cached.get('admin_email', ''))
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+            raise SetupError('Enter a valid administrator email.')
         choice = dict(hostname=hostname, admin_email=email, tls_cert=str(cert), tls_key=str(key),
                       ca_cert=str(ca) if ca else None, subnet=subnet, bind_address=bind, no_cache=self.args.no_cache, https_port=port)
         self.profile['installation'] = choice
@@ -893,6 +911,8 @@ class Coordinator:
         if (getattr(self.args, 'https_port', None) is not None or
                 'CSC_HTTPS_PORT=' in (self.root / 'deploy/.env').read_text()):
             self.ensure_https_port()
+        info('STEP 6 — Installation')
+        info('--------------------------------')
         info('Starting database, applying migrations and starting application services...')
         self.controller(*args)
         self.health(strict=True)
@@ -954,10 +974,10 @@ class Coordinator:
                 info('Upgrade: ' + old['release'] + ' -> ' + self.descriptor['release'])
                 if not self.args.yes and not consent('Continue with encrypted backup, maintenance and upgrade?'):
                     raise SetupError('Upgrade cancelled; installation is unchanged.')
+        manifest = self.fetch_bundle()
         choice = password = None
         if state in ('fresh', 'uninitialized'):
             choice, password = self.choices()
-        manifest = self.fetch_bundle()
         if state in ('fresh', 'uninitialized'):
             self.initialize_staged(choice, password)
             password = None
@@ -984,6 +1004,7 @@ def arguments():
     parser.add_argument('--tls-key')
     parser.add_argument('--ca-cert')
     parser.add_argument('--registry-user')
+    parser.add_argument('--registry-token-fd', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--remember-registry', action='store_true', help='Explicitly consent to root-only, non-encrypted storage of a READ-ONLY registry login')
     parser.add_argument('--no-cache', action='store_true')
     parser.add_argument('--subnet')

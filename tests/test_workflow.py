@@ -377,3 +377,24 @@ class DedicatedHttpsPortTests(unittest.TestCase):
         with self.assertRaisesRegex(M.SetupError, 'Unrecognized'):
             self.coord.ensure_https_port()
 
+class StandaloneLauncherTests(unittest.TestCase):
+    def test_standalone_launcher_present_and_shell_valid(self):
+        launcher = ROOT / 'bootstrap/install.sh'
+        self.assertTrue(launcher.is_file())
+        subprocess.run(['bash', '-n', str(launcher)], check=True)
+        source = launcher.read_text()
+        self.assertIn('GitHub username:', source)
+        self.assertIn('Docker Hub username:', source)
+        self.assertIn('BOOTSTRAP-SHA256SUMS', source)
+        self.assertIn('--registry-token-fd 3', source)
+        self.assertNotIn('curl -k', source)
+        self.assertNotIn('docker compose down -v', source)
+
+    def test_fd_login_uses_one_shot_descriptor_without_prompt(self):
+        value = WorkflowTests.coordinator
+        self.assertTrue(callable(value))
+        source = (ROOT / 'bootstrap/csc_setup.py').read_text()
+        self.assertIn("os.fdopen(os.dup(fd)", source)
+        self.assertIn('self.args.registry_token_fd = None', source)
+        self.assertLess(source.index('manifest = self.fetch_bundle()'), source.index('choice, password = self.choices()'))
+
