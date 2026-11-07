@@ -463,6 +463,69 @@ class Coordinator:
             self.ensure_image(manifest['images'][service]['name'], service)
         return manifest
 
+    def https_port(self):
+        # CLI override, persisted configuration, then the historical default.
+        chosen = getattr(self.args, 'https_port', None)
+        if chosen is None and (self.root / 'deploy/.env').is_file():
+            for line in (self.root / 'deploy/.env').read_text().splitlines():
+                if line.startswith('CSC_HTTPS_PORT='):
+                    chosen = line.partition('=')[2].strip().strip('\"')
+                    break
+        if chosen is None:
+            chosen = self.profile.get('installation', {}).get('https_port', 443)
+        try:
+            value = int(chosen)
+        except (TypeError, ValueError):
+            raise SetupError('HTTPS port must be 443 or between 1024 and 65535.') from None
+        if not 1 <= value <= 65535 or (value < 1024 and value != 443):
+            raise SetupError('HTTPS port must be 443 or between 1024 and 65535.')
+        return value
+
+    def approved_compose(self):
+        # Accept only the approved Compose payload plus the one known port substitution.
+        local = self.root / 'deploy/compose.yaml'
+        approved = self.stage / 'deploy/compose.yaml'
+        if not regular(local) or not regular(approved):
+            return False
+        current = local.read_text(encoding='utf-8')
+        original = approved.read_text(encoding='utf-8')
+        port_token = '${CSC_BIND_ADDRESS:-0.0.0.0}:${CSC_HTTPS_PORT:-443}:8443'
+        original_token = '${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443'
+        return current == original or (current.count(port_token) == 1 and
+              current.replace(port_token, original_token, 1) == original)
+
+    def ensure_https_port(self):
+        # Modify only the approved gateway port expression, not app source or secrets.
+        port = self.https_port()
+        filename = self.root / 'deploy/compose.yaml'
+        if not regular(filename):
+            raise SetupError('CSC Compose configuration is unavailable.')
+        source = filename.read_text(encoding='utf-8')
+        legacy = '${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443'
+        managed = '${CSC_BIND_ADDRESS:-0.0.0.0}:${CSC_HTTPS_PORT:-443}:8443'
+        if source.count(managed) != 1:
+            if source.count(legacy) != 1:
+                raise SetupError('Unrecognized CSC gateway port mapping; refusing to modify Compose.')
+            source = source.replace(legacy, managed, 1)
+        env_controller = module_at(self.root)
+        values = env_controller.env_values()
+        previous = int(values.get('CSC_HTTPS_PORT', '443'))
+        bind = values.get('CSC_BIND_ADDRESS', '0.0.0.0')
+        if previous != port:
+            with socket.socket() as sock:
+                try:
+                    sock.bind((bind, port))
+                except OSError:
+                    raise SetupError('HTTPS port ' + str(port) + ' is occupied. Other services are preserved.') from None
+        if filename.read_text(encoding='utf-8') != source:
+            atomic(filename, source.encode(), 0o644)
+        if str(values.get('CSC_HTTPS_PORT', '')) != str(port):
+            values['CSC_HTTPS_PORT'] = str(port)
+            env_controller.write_env(values)
+        self.profile.setdefault('installation', {})['https_port'] = port
+        save_json(self.profile_file, self.profile)
+        info('CSC HTTPS port: ' + str(port) + ' (other services unchanged).')
+
     def compose(self, *command, capture=False, check=True):
         return self.run(['docker', 'compose', '--env-file', str(self.root / 'deploy/.env'),
                          '-f', str(self.root / 'deploy/compose.yaml'), *command], capture=capture, check=check)
@@ -556,13 +619,14 @@ class Coordinator:
         bind = self.args.bind_address or cached.get('bind_address', '0.0.0.0')
         if ipaddress.ip_address(bind).version != 4:
             raise SetupError('The HTTPS bind address must be IPv4 for this release.')
+        port = self.https_port()
         with socket.socket() as check:
             try:
-                check.bind((bind, 443))
+                check.bind((bind, port))
             except OSError:
-                raise SetupError('HTTPS port 443 is already occupied at ' + bind + '. Existing services were not stopped.') from None
+                raise SetupError('HTTPS port ' + str(port) + ' is already occupied at ' + bind + '. Existing services were not stopped.') from None
         choice = dict(hostname=hostname, admin_email=email, tls_cert=str(cert), tls_key=str(key),
-                      ca_cert=str(ca) if ca else None, subnet=subnet, bind_address=bind, no_cache=self.args.no_cache)
+                      ca_cert=str(ca) if ca else None, subnet=subnet, bind_address=bind, no_cache=self.args.no_cache, https_port=port)
         self.profile['installation'] = choice
         save_json(self.profile_file, self.profile)
         return choice, prompt_password()
@@ -641,9 +705,10 @@ class Coordinator:
             bind = controller.env_values().get('CSC_BIND_ADDRESS', '0.0.0.0')
             address = '127.0.0.1' if bind == '0.0.0.0' else bind
             hostname = (self.root / '.deploy/hostname').read_text().strip()
+            port = self.https_port()
             self.run(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '5', '--max-time', '30',
-                      '--noproxy', '*', '--resolve', hostname + ':443:' + address,
-                      '--cacert', str(self.root / '.deploy/secrets/tls_cert'), 'https://' + hostname + '/health/ready'])
+                      '--noproxy', '*', '--resolve', hostname + ':' + str(port) + ':' + address,
+                      '--cacert', str(self.root / '.deploy/secrets/tls_cert'), 'https://' + hostname + ':' + str(port) + '/health/ready'])
             info('HTTPS gateway readiness passed against the installed certificate.')
         return not bad
 
@@ -800,6 +865,9 @@ class Coordinator:
         args = ['up']
         if running.exists() and read_json(running).get('release') != desired:
             args += ['--ack-upgrade', desired]
+        if (getattr(self.args, 'https_port', None) is not None or
+                'CSC_HTTPS_PORT=' in (self.root / 'deploy/.env').read_text()):
+            self.ensure_https_port()
         info('Starting database, applying migrations and starting application services...')
         self.controller(*args)
         self.health(strict=True)
@@ -810,7 +878,7 @@ class Coordinator:
             save_json(journal, value)
         save_json(self.control / 'installed.json', {'installer': self.descriptor['installer'], 'release': desired})
         hostname = (self.root / '.deploy/hostname').read_text().strip()
-        info('READY: https://' + hostname + ' | administrator login: administrator')
+        info('READY: https://' + hostname + ':' + str(self.https_port()) + ' | administrator login: administrator')
         info('Commission source mappings, product license and CSC access before enabling synchronization.')
 
     def execute(self):
@@ -849,7 +917,7 @@ class Coordinator:
             journal = self.control / 'upgrade.json'
             pending_transition = journal.exists() and read_json(journal).get('phase') != 'complete'
             if old['release'] == self.descriptor['release'] and not pending_transition:
-                if self.health():
+                if getattr(self.args, 'https_port', None) is None and self.health():
                     info('Already running the approved release; nothing was reinstalled.')
                     return
             if old['release'] != self.descriptor['release'] and action != 'upgrade':
@@ -872,7 +940,7 @@ class Coordinator:
             old = read_json(self.root / 'release.json')
             transition(old, manifest)
             # Any pending journal is replayed, including a crash between individual file updates.
-            changed = any(sha(self.root / name) != sha(self.stage / name) for name in PAYLOAD_FILES if regular(self.root / name))
+            changed = any(sha(self.root / name) != sha(self.stage / name) for name in PAYLOAD_FILES - {'deploy/compose.yaml'} if regular(self.root / name)) or not self.approved_compose()
             missing = any(not regular(self.root / name) for name in PAYLOAD_FILES)
             journal = self.control / 'upgrade.json'
             incomplete = journal.exists() and read_json(journal).get('phase') != 'complete'
@@ -895,6 +963,7 @@ def arguments():
     parser.add_argument('--no-cache', action='store_true')
     parser.add_argument('--subnet')
     parser.add_argument('--bind-address')
+    parser.add_argument('--https-port', type=int, help='Dedicated host HTTPS port, e.g. 18443; persisted after installation')
     parser.add_argument('--install-docker', action='store_true')
     parser.add_argument('--backup-recipient', help='AGE public recipient; never a private identity')
     parser.add_argument('--use-local-release', action='store_true', help='For upgrade: use the reviewed local release pointer instead of refreshing it from public GitHub')

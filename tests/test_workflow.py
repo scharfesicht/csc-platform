@@ -310,3 +310,52 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('shell=True', source)
 
 if __name__ == '__main__': unittest.main()
+
+class DedicatedHttpsPortTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.root = fixture(self.base / 'site', initialized=True, started=True)
+        self.control = self.base / 'control'
+        self.control.mkdir()
+        self.profile = self.control / 'preferences.json'
+        self.profile.write_text('{}')
+        desc = {'product': 'CSCIntegrationPlatform', 'schemaVersion': 1, 'release': '1.0.0-rc3',
+                'platform': 'linux/amd64', 'minimumBootstrap': '1.0.0-rc5',
+                'installer': 'docker.io/scharfesicht/csc-platform-installer@sha256:' + 'd' * 64}
+        opts = arguments(self.root)
+        opts.https_port = 18443
+        self.coord = M.Coordinator(opts, desc)
+        self.coord.control = self.control
+        self.coord.profile_file = self.profile
+        self.coord.profile = {}
+        (self.root / 'deploy/compose.yaml').write_text('gateway:\n  ports: ["${CSC_BIND_ADDRESS:-0.0.0.0}:443:8443"]\n')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_port_persists_and_is_repeatable(self):
+        controller = types.SimpleNamespace(
+            env_values=lambda: self._values(),
+            write_env=lambda v: (self.root / 'deploy/.env').write_text(''.join(k+'='+json.dumps(str(x))+'\n' for k,x in v.items())))
+        with mock.patch.object(M, 'module_at', return_value=controller):
+            self.coord.ensure_https_port()
+            first = (self.root / 'deploy/compose.yaml').read_bytes()
+            self.coord.args.https_port = None
+            self.assertEqual(self.coord.https_port(), 18443)
+            self.coord.ensure_https_port()
+            self.assertEqual(first, (self.root / 'deploy/compose.yaml').read_bytes())
+            self.assertEqual(self._values()['CSC_HTTPS_PORT'], '18443')
+
+    def _values(self):
+        result = {}
+        for line in (self.root / 'deploy/.env').read_text().splitlines():
+            k, v = line.split('=', 1)
+            result[k] = json.loads(v) if v.startswith('"') else v
+        return result
+
+    def test_unknown_compose_mapping_refused(self):
+        (self.root / 'deploy/compose.yaml').write_text('gateway:\n  ports: ["127.0.0.1:443:8443"]\n')
+        with self.assertRaisesRegex(M.SetupError, 'Unrecognized'):
+            self.coord.ensure_https_port()
+
