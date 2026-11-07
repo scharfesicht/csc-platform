@@ -1,0 +1,10 @@
+# Public release allowlist: deny all by default.
+*
+!/.gitignore
+!/README.md
+!/SECURITY.md
+!/LICENSE.md
+!/bootstrap/
+/bootstrap/*
+!/bootstrap/csc-bootstrap.sh
+!/bootstrap/csc-bootstrap.sh.sha256
