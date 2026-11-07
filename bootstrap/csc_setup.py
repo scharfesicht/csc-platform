@@ -732,9 +732,34 @@ class Coordinator:
         before = secret_fingerprints(self.root)
         journal_file = self.control / 'upgrade.json'
         journal = read_json(journal_file) if journal_file.exists() else None
+        # A never-started site may recover from a failed release using a newer,
+        # approved release. A site that has ever started must take the normal
+        # backed-up upgrade path; never silently discard its transition journal.
+        if journal and journal.get('phase') != 'complete' and (
+            journal.get('targetRelease') != manifest['release'] or
+            journal.get('installer') != self.descriptor['installer']
+        ):
+            recovery_allowed = (
+                not started and not journal.get('wasStarted') and
+                not (self.root / '.deploy/running-release.json').exists() and
+                journal.get('phase') in ('prepared', 'staged') and
+                isinstance(journal.get('targetRelease'), str) and
+                isinstance(journal.get('fromRelease'), str) and
+                journal.get('secretHashes') == before and
+                old['release'] in (journal['fromRelease'], journal['targetRelease']) and
+                version_key(manifest['release']) > version_key(journal['targetRelease'])
+            )
+            if not recovery_allowed:
+                raise SetupError('An interrupted transition targets a different release. Recovery is refused unless the site never started and the newer release preserves its secrets.')
+            # Preserve the previous recovery evidence and snapshot. The new
+            # journal is only created after this archive has been written.
+            history = self.control / 'transition-history'
+            secure_dir(history)
+            archived = history / (dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:8] + '.json')
+            atomic(archived, journal_file.read_bytes())
+            journal = None
+            info('Superseding unfinished never-started release with newer approved release; prior transition journal archived.')
         if journal and journal.get('phase') != 'complete':
-            if journal.get('targetRelease') != manifest['release'] or journal.get('installer') != self.descriptor['installer']:
-                raise SetupError('An interrupted transition targets a different release. Resolve that transition first.')
             if journal.get('secretHashes') != before:
                 raise SetupError('Customer secrets changed during an incomplete transition; automatic continuation refused.')
             if journal.get('wasStarted'):

@@ -243,6 +243,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(M.secret_fingerprints(root), before)
         self.assertEqual(M.read_json(value.control / 'upgrade.json')['phase'], 'staged')
 
+    def test_never_started_rc2_failure_can_recover_with_rc3(self):
+        root = fixture(self.base / 'install', '1.0.0-rc2', initialized=True)
+        stage = fixture(self.base / 'stage', '1.0.0-rc3')
+        before = M.secret_fingerprints(root)
+        value = self.coordinator(root)
+        value.descriptor = dict(self.descriptor, release='1.0.0-rc3', installer='docker.io/scharfesicht/csc-platform-installer@sha256:' + 'e'*64)
+        value.stage = stage
+        prior = {'phase':'staged', 'fromRelease':'1.0.0-rc1', 'targetRelease':'1.0.0-rc2',
+                 'installer':self.descriptor['installer'], 'secretHashes':before, 'wasStarted':False,
+                 'fileSnapshot':str(self.base / 'old-snapshot'), 'backup':None}
+        M.save_json(value.control / 'upgrade.json', prior)
+        value.backup = mock.Mock(side_effect=AssertionError('Never-started customer must not require upgrade backup'))
+        value.overlay(manifest('1.0.0-rc3'), started=False)
+        self.assertEqual(M.read_json(root / 'release.json')['release'], '1.0.0-rc3')
+        self.assertEqual(M.secret_fingerprints(root), before)
+        self.assertEqual(M.read_json(value.control / 'upgrade.json')['phase'], 'staged')
+        archived = list((value.control / 'transition-history').glob('*.json'))
+        self.assertEqual(len(archived),1)
+        self.assertEqual(M.read_json(archived[0]), prior)
+        value.backup.assert_not_called()
+
+    def test_rc3_recovery_refuses_prior_started_or_changed_secrets(self):
+        for reason in ('started', 'marker', 'changed'):
+            with self.subTest(reason=reason):
+                root = fixture(self.base / ('install-' + reason), '1.0.0-rc2', initialized=True)
+                stage = fixture(self.base / ('stage-' + reason), '1.0.0-rc3')
+                value = self.coordinator(root); value.stage=stage
+                value.descriptor = dict(self.descriptor, release='1.0.0-rc3', installer='docker.io/scharfesicht/csc-platform-installer@sha256:' + 'e'*64)
+                old = {'phase':'staged', 'fromRelease':'1.0.0-rc1', 'targetRelease':'1.0.0-rc2',
+                       'installer':self.descriptor['installer'], 'secretHashes':M.secret_fingerprints(root),
+                       'wasStarted':reason=='started'}
+                M.save_json(value.control / 'upgrade.json', old)
+                if reason=='marker':
+                    (root / '.deploy/running-release.json').write_text('{}')
+                if reason=='changed':
+                    (root / '.deploy/secrets/installation_id').write_text('changed')
+                with self.assertRaisesRegex(M.SetupError, 'Recovery is refused'):
+                    value.overlay(manifest('1.0.0-rc3'), started=False)
+                self.assertEqual(M.read_json(root / 'release.json')['release'], '1.0.0-rc2')
+                self.assertEqual(M.read_json(value.control / 'upgrade.json'), old)
+
     def test_prepared_initialization_commit_recovers_without_new_identity(self):
         root = fixture(self.base / 'install')
         value = self.coordinator(root)
