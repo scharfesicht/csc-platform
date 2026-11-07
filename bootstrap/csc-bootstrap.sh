@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# CSC Integration Platform: Docker Hub bootstrap for Ubuntu 24.04 (amd64).
+# CSC Integration Platform: Docker Hub bootstrap for Ubuntu 24.04 and 26.04 (amd64).
 # No Git, Docker socket mounts, automatic upgrades, or source-code installation.
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
 PRODUCT='CSC Integration Platform'
-VERSION='1.0.0-rc1'
+VERSION='1.0.0-rc2'
 INSTALLER_DEFAULT='docker.io/scharfesicht/csc-platform-installer@sha256:02c9f5fd519175be5a7cb7951f9552cbb62e57604ca7daf8938d7243b1f362f5'
 INSTALLER="$INSTALLER_DEFAULT"
 INSTALL_DIR='/opt/csc-platform'
@@ -37,7 +37,7 @@ trap cleanup EXIT
 
 usage() {
 cat <<'USAGE'
-CSC Integration Platform - Ubuntu Docker Hub bootstrap
+CSC Integration Platform - Ubuntu 24.04/26.04 Docker Hub bootstrap
 
 Usage:
   sudo bash csc-bootstrap.sh check [--install-dir /opt/csc-platform]
@@ -52,7 +52,7 @@ Options for install:
   --installer DIGEST_REF     Supplier-issued pinned installer digest (default: 1.0.0-rc1)
   --install-dir DIRECTORY   Destination for a NEW installation (default: /opt/csc-platform)
   --registry-user USER      READ-ONLY Docker Hub username; access token prompted securely
-  --install-docker          Install official Docker Engine/Compose on CLEAN Ubuntu 24.04
+  --install-docker          Install official Docker Engine/Compose on CLEAN Ubuntu 24.04 or 26.04
   --hostname FQDN           Management HTTPS hostname
   --admin-email ADDRESS     Initial administrator email
   --tls-cert PATH           Certificate chain PEM, file already on server
@@ -109,7 +109,11 @@ require_root_linux() {
   [[ -f /etc/os-release ]] || die 'Could not identify the Linux distribution.'
   # shellcheck source=/dev/null
   . /etc/os-release
-  [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == '24.04' ]] || die 'Only Ubuntu 24.04 LTS is supported.'
+  [[ "${ID:-}" == ubuntu ]] || die 'Only Ubuntu 24.04/26.04 LTS is supported.'
+  case "${VERSION_ID:-}" in
+    24.04|24.04.*|26.04|26.04.*) ;;
+    *) die "Unsupported Ubuntu version: ${VERSION_ID:-unknown}; requires 24.04 or 26.04 LTS." ;;
+  esac
   [[ "$(uname -m)" == 'x86_64' ]] || die 'Only linux/amd64 (x86_64) is supported.'
   [[ -s /etc/machine-id ]] || die 'Stable /etc/machine-id is required for licensing.'
   command -v python3 >/dev/null || die 'Python 3 is required.'
@@ -141,11 +145,20 @@ install_docker_engine() {
   local fingerprint
   fingerprint="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '$1=="fpr" {print $10; exit}')"
   [[ "$fingerprint" == '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' ]] || die 'Docker apt signing-key fingerprint mismatch.'
-  cat >/etc/apt/sources.list.d/docker.sources <<'SOURCES'
+  # Always use the matching official Docker apt suite, never mix Noble
+  # packages into a Resolute server (or vice versa).
+  local docker_codename
+  case "${VERSION_ID:-}" in
+    24.04|24.04.*) docker_codename='noble' ;;
+    26.04|26.04.*) docker_codename='resolute' ;;
+    *) die "Unsupported Docker package suite for Ubuntu ${VERSION_ID:-unknown}." ;;
+  esac
+  cat >/etc/apt/sources.list.d/docker.sources <<SOURCES
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
-Suites: noble
+Suites: ${docker_codename}
 Components: stable
+Architectures: amd64
 Signed-By: /etc/apt/keyrings/docker.asc
 SOURCES
   DEBIAN_FRONTEND=noninteractive apt-get update
@@ -269,7 +282,7 @@ case "$ACTION" in
   check)
     info "$PRODUCT bootstrap $VERSION preflight"
     if docker_ready; then info 'Docker Engine + Compose: ready'; else info 'Docker Engine/Compose: missing (use install --install-docker on a clean host)'; fi
-    info 'Ubuntu 24.04, linux/amd64, Python 3, OpenSSL and machine-id: ready'
+    info "Ubuntu ${VERSION_ID} LTS, linux/amd64, Python 3, OpenSSL and machine-id: ready"
     ;;
   status)
     [[ -f "$INSTALL_DIR/release.json" ]] || die "No customer installation at $INSTALL_DIR"

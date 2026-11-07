@@ -2,8 +2,9 @@
 
 **Publisher:** ScharfeSicht  
 **Public repository:** `https://github.com/scharfesicht/csc-platform` (publish manually)  
-**Bootstrap release:** `1.0.0-rc1`  
-**Platform:** Ubuntu 24.04 LTS, `linux/amd64`
+**Bootstrap release:** `1.0.0-rc2` (supports Ubuntu 24.04 and 26.04)
+**Private installer release:** `1.0.0-rc1` (unchanged)  
+**Platform:** Ubuntu 24.04 or 26.04 LTS, `linux/amd64`
 
 This repository distributes **only the public, reviewable bootstrap**. It does **not** contain the application, ABP/.NET source, Docker image builds, credentials, license-signing keys, customer configuration or the actual installer.
 
@@ -30,10 +31,10 @@ Do **not** run arbitrary content directly through `curl | bash` as root. Review 
 
 ## First customer/test installation
 
-On a fresh Ubuntu 24.04 x86_64 system, make the bootstrap and checksum available from a trusted release of this repository. For example, **after this repository has actually been published**, use a pinned, approved tag:
+On a fresh Ubuntu 24.04 or 26.04 x86_64 system, make the bootstrap and checksum available from a trusted release of this repository. For example, **after this repository has actually been published**, use a pinned, approved tag:
 
 ```bash
-BASE=https://raw.githubusercontent.com/scharfesicht/csc-platform/v1.0.0-rc1/bootstrap
+BASE=https://raw.githubusercontent.com/scharfesicht/csc-platform/v1.0.0-rc2/bootstrap
 curl -fL --proto '=https' --tlsv1.2 -o csc-bootstrap.sh "$BASE/csc-bootstrap.sh"
 curl -fL --proto '=https' --tlsv1.2 -o csc-bootstrap.sh.sha256 "$BASE/csc-bootstrap.sh.sha256"
 sha256sum -c csc-bootstrap.sh.sha256
@@ -52,7 +53,7 @@ sudo bash csc-bootstrap.sh install \
   --install-docker
 ```
 
-Omit `--install-docker` when Docker Engine and Compose are already working. The script prompts on the terminal for the registry token and initial administrator password. Never put either secret in GitHub, shell history, a URL, or a command argument. Use `--stage-only` to avoid starting services during commissioning.
+Omit `--install-docker` when Docker Engine and Compose are already working. If requested on a clean server, Docker packages are installed from the **matching official Ubuntu suite** (`noble` on 24.04, `resolute` on 26.04); the bootstrap will not replace a partial existing Docker installation. The script prompts on the terminal for the registry token and initial administrator password. Never put either secret in GitHub, shell history, a URL, or a command argument. Use `--stage-only` to avoid starting services during commissioning.
 
 After deployment:
 
