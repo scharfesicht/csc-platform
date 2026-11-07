@@ -1,10 +1,22 @@
-# Public release allowlist: deny all by default.
+# Public repository allowlist. No application source or customer state.
 *
 !/.gitignore
+!/.gitattributes
 !/README.md
 !/SECURITY.md
 !/LICENSE.md
+!/BOOTSTRAP-SHA256SUMS
+!/install.sh
+!/upgrade.sh
+!/status.sh
+!/verify.sh
+!/backup.sh
 !/bootstrap/
 /bootstrap/*
 !/bootstrap/csc-bootstrap.sh
 !/bootstrap/csc-bootstrap.sh.sha256
+!/bootstrap/csc_setup.py
+!/bootstrap/release.json
+!/tests/
+/tests/*
+!/tests/test_workflow.py

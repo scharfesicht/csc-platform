@@ -1,70 +1,65 @@
-# CSC Integration Platform — Public Bootstrap
+# CSC Integration Platform - public bootstrap
 
-**Publisher:** ScharfeSicht  
-**Public repository:** `https://github.com/scharfesicht/csc-platform` (publish manually)  
-**Bootstrap release:** `1.0.0-rc2` (supports Ubuntu 24.04 and 26.04)
-**Private installer release:** `1.0.0-rc1` (unchanged)  
-**Platform:** Ubuntu 24.04 or 26.04 LTS, `linux/amd64`
+This public repository contains only deployment coordination, not the private application or actual installer.
+The actual installer and six runtime images come from **private ScharfeSicht Docker Hub repositories**.
 
-This repository distributes **only the public, reviewable bootstrap**. It does **not** contain the application, ABP/.NET source, Docker image builds, credentials, license-signing keys, customer configuration or the actual installer.
+**Bootstrap workflow:** v1.0.0-rc5. The approved application release is recorded in `bootstrap/release.json`.
+The initially bundled pointer is the already-published **1.0.0-rc2** installer.
 
-## Delivery separation
+## Install or resume
 
-| Public on GitHub | Private on Docker Hub |
-| --- | --- |
-| `scharfesicht/csc-platform` — bootstrap, checksum, instructions | `scharfesicht/csc-platform-installer` — pinned installer image |
-| No product source or credentials | API, worker, migrator, frontend, PostgreSQL, Valkey images |
-
-The bootstrap is pinned to this **already-published** installer image digest:
-
-`docker.io/scharfesicht/csc-platform-installer@sha256:02c9f5fd519175be5a7cb7951f9552cbb62e57604ca7daf8938d7243b1f362f5`
-
-The private images require a customer-specific **read-only Docker Hub account/token**. Registry access is distinct from the separately enforced ScharfeSicht product license. Publishing this bootstrap does not authorize a third party to redistribute or operate the application.
-
-## Verify the bootstrap
+On Ubuntu 24.04/26.04 LTS, x86-64, with Python 3.12+, OpenSSL and curl:
 
 ```bash
-(cd bootstrap && sha256sum -c csc-bootstrap.sh.sha256)
+git clone https://github.com/scharfesicht/csc-platform.git
+cd csc-platform
+sudo bash install.sh
 ```
 
-Do **not** run arbitrary content directly through `curl | bash` as root. Review the script and verify its checksum. For production, pin a reviewed GitHub commit or protected release tag, and verify the expected checksum from a trusted independent channel.
+The guided command detects fresh installation, files awaiting initialization, or configured startup awaiting recovery.
+It reuses existing customer configuration. **Do not delete `/opt/csc-platform` or PostgreSQL volumes.**
+On the current `app-test-server`, the same command resumes using the new approved rc2 release; it does not ask you to recreate the administrator account.
 
-## First customer/test installation
+For a new site it requests the management hostname, administrator email, HTTPS files, administrator password and a customer **read-only** Docker Hub login.
+A self-signed certificate is offered only as an explicitly selected isolated-lab option. Production needs a trusted certificate and a real DNS name.
+Docker installation is offered on a clean host only and requires consent. Existing Docker/containerd installations are never replaced.
 
-On a fresh Ubuntu 24.04 or 26.04 x86_64 system, make the bootstrap and checksum available from a trusted release of this repository. For example, **after this repository has actually been published**, use a pinned, approved tag:
+Passwords are validated and retried before installation state is committed. The current product policy remains 16 characters with uppercase/lowercase/number/symbol; this workflow does not silently change ABP identity policy.
+
+Registry credentials can be remembered **only with explicit consent**. They are then held in a root-only Docker configuration outside the application. Docker's config auth is base64, not encryption. Never use a supplier publishing token on a customer server. Tokens still need renewal when expired or revoked.
+
+## Maintenance
 
 ```bash
-BASE=https://raw.githubusercontent.com/scharfesicht/csc-platform/v1.0.0-rc2/bootstrap
-curl -fL --proto '=https' --tlsv1.2 -o csc-bootstrap.sh "$BASE/csc-bootstrap.sh"
-curl -fL --proto '=https' --tlsv1.2 -o csc-bootstrap.sh.sha256 "$BASE/csc-bootstrap.sh.sha256"
-sha256sum -c csc-bootstrap.sh.sha256
-sudo bash csc-bootstrap.sh check
+sudo bash status.sh
+sudo bash verify.sh
+sudo bash backup.sh
+sudo bash upgrade.sh
 ```
 
-Then install using a **customer-scoped read-only registry identity** and real TLS files:
+`upgrade.sh` reads only the public approved-release metadata from ScharfeSicht GitHub over HTTPS. It does not download/execute new program code. It then pulls the pinned private release, obtains confirmation, creates an encrypted backup, preserves configuration and runs migration/startup through the private controller.
+For an intentionally pinned checkout use `sudo bash upgrade.sh --use-local-release`.
+
+The first backup/upgrade asks for an **age public recipient**. Keep its recovery private key with your approved backup custodian, not in this public repository or alongside customer images. The recipient is remembered; no private recovery key is required for making backups. The encrypted backup includes PostgreSQL, installation secrets, key storage, controller files and configuration. Copy backups off-server and perform a restore acceptance test.
+
+First-start recovery (no successful running-release marker) preserves the existing database and secrets without requiring a production backup-enrollment step. Established installations require an encrypted backup before upgrading. An upgrade is never treated as a fresh install. PostgreSQL major-version changes and signing-trust changes are refused automatically. No automatic rollback of database migrations is attempted.
+
+For a failed start, rerun `install.sh` after the release has been corrected. Interrupted upgrades retain a journal and resume the same target; a changed target or changed secrets is rejected for review.
+
+Run `sudo bash install.sh --help` for optional input arguments such as `--hostname`, `--registry-user`, `--no-cache`, `--subnet`, and `--install-dir`.
+Detailed root-only logs and recovery snapshots are under `/var/lib/csc-platform-bootstrap/`; encrypted backups are under `/var/backups/csc-platform/`.
+
+## Release trust and commissioning
+
+No customer is asked to copy a SHA-256 image reference or call `cscctl.py` manually. Checksums, pinned digests, platform checks and product-license gates remain enforced internally.
+Checksums in the same repository detect accidental corruption, not a malicious change to the repository itself. Review/protect supplier commits and tags through your normal release controls.
+
+A healthy deployment is not permission to send production attendance. Commission the product license, employee/Civil ID mappings, TNA mappings, CSC credentials and limited live acceptance before enabling synchronization. This bootstrap never enables synchronization by itself.
+
+## Local tests
 
 ```bash
-sudo bash csc-bootstrap.sh install \
-  --hostname csc-test.example.internal \
-  --admin-email administrator@example.internal \
-  --tls-cert /secure/fullchain.pem \
-  --tls-key /secure/privkey.pem \
-  --registry-user CUSTOMER_READONLY_DOCKERHUB_USER \
-  --install-docker
+python3 -m unittest discover -s tests -v
 ```
 
-Omit `--install-docker` when Docker Engine and Compose are already working. If requested on a clean server, Docker packages are installed from the **matching official Ubuntu suite** (`noble` on 24.04, `resolute` on 26.04); the bootstrap will not replace a partial existing Docker installation. The script prompts on the terminal for the registry token and initial administrator password. Never put either secret in GitHub, shell history, a URL, or a command argument. Use `--stage-only` to avoid starting services during commissioning.
-
-After deployment:
-
-```bash
-sudo bash csc-bootstrap.sh status
-```
-
-**This release remains a test candidate** until live Ubuntu deployment, license activation, migrations, first login, BioStar/Time365 mapping, CSC acknowledgments and recovery procedures pass acceptance checks. Synchronization is paused by default.
-
-## Publishing rules
-
-Only the allowlisted files in this repository may be made public: `bootstrap/csc-bootstrap.sh`, `bootstrap/csc-bootstrap.sh.sha256`, `.gitignore`, `README.md`, `SECURITY.md`, and `LICENSE.md`. Do not place the private product solution or supplier signing material in this repository. The `.gitignore` is deny-by-default, but **review `git status` and the staged file list before every public push**.
-
-This repository is **bootstrap-only**. Upgrades to an existing customer deployment are a separate audited workflow; never overwrite an existing `/opt/csc-platform` installation with the bootstrap.
+These are offline orchestration tests. Live Ubuntu/Docker/database/browser/CSC acceptance is still required.
