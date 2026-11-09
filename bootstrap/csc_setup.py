@@ -778,9 +778,17 @@ class Coordinator:
         directory = safe_path(Path('/var/backups/csc-platform'))
         secure_dir(directory)
         output = directory / ('csc-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:8] + '.tar.age')
-        active = [r['Service'] for r in self.state_services() if r.get('State') == 'running' and r.get('Service') in ('api', 'worker', 'gateway')]
+        services = self.state_services()
+        active = [r['Service'] for r in services if r.get('State') == 'running' and r.get('Service') in ('api', 'worker', 'gateway')]
         info('Creating an encrypted database/configuration backup. Application writes are stopped during the snapshot.')
         self.compose('stop', 'gateway', 'api', 'worker')
+        # CSC_AUTO_UPGRADE_BOOTSTRAP_V9: a previously started installation may
+        # have had only its CSC containers removed. Start ONLY the existing
+        # CSC PostgreSQL service from the OLD release before pg_dump; never
+        # reinitialize the volume or touch unrelated Docker projects.
+        if not any(r.get('Service') == 'postgres' and r.get('State') == 'running' for r in services):
+            info('Starting existing CSC PostgreSQL for the required encrypted backup.')
+            self.compose('up', '-d', '--wait', 'postgres')
         success = False
         try:
             with tempfile.TemporaryDirectory(prefix='backup-', dir=self.control) as tmp:
@@ -1049,6 +1057,12 @@ def main():
     os.umask(0o077)
     verify_checkout(HERE.parent)
     descriptor = load_descriptor(HERE / 'release.json')
+    # CSC_AUTO_UPGRADE_BOOTSTRAP_V9: the same public installer handles fresh and
+    # started installations. The existing upgrade transaction, consent prompt,
+    # encrypted backup, release checks and journal remain mandatory.
+    if args.action == 'install' and classify(safe_path(Path(args.install_dir))) == 'started':
+        info('Existing CSC installation detected: selecting protected upgrade/verify path.')
+        args.action = 'upgrade'
     if args.action == 'upgrade' and not args.use_local_release:
         descriptor = approved_online_release()
     coordinator = Coordinator(args, descriptor)
