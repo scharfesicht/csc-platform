@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "product": "CSCIntegrationPlatform",
-  "release": "1.0.0-rc6",
+  "release": "1.0.0-rc7",
   "platform": "linux/amd64",
   "minimumBootstrap": "1.0.0-rc5",
-  "installer": "docker.io/scharfesicht/csc-platform-installer@sha256:7687f2de6ff7d888f49d6b79f4bc7f795eea6e6b0ed1978b47cb2e4f4b25d3cb"
+  "installer": "docker.io/scharfesicht/csc-platform-installer@sha256:645884ec16237bc75a1428b44cbb2cb87a554a1c3831eee118017bbe6f7fc756"
 }
