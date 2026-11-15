@@ -501,9 +501,21 @@ class Coordinator:
         gateway = '      control: {ipv4_address: "${CSC_PROXY_IP:?Required}"}\n'
         gateway_with_ingress = gateway + '      ingress: {}\n'
         ingress_definition = '  ingress: {driver: bridge, internal: false}\n'
+        # RC7's approved Compose payload uses this equivalent non-internal bridge
+        # shorthand. Normalize only the exact known gateway + top-level pair.
+        ingress_shorthand = '  ingress: {}\n'
         egress = '  egress: {}\n'
-        if source.count(gateway_with_ingress) == 1 and source.count(ingress_definition) == 1:
+        if (source.count(gateway_with_ingress) == 1 and
+                source.count(ingress_definition) == 1 and
+                source.count(egress) == 1 and
+                sum(line.startswith('  ingress:') for line in source.splitlines()) == 1):
             return source
+        if (source.count(gateway_with_ingress) == 1 and
+                sum(line == ingress_shorthand.rstrip('\n') for line in source.splitlines()) == 1 and
+                source.count(ingress_definition) == 0 and
+                source.count(egress) == 1 and
+                sum(line.startswith('  ingress:') for line in source.splitlines()) == 1):
+            return source.replace('\n' + ingress_shorthand, '\n' + ingress_definition, 1)
         if (source.count(gateway) != 1 or source.count(egress) != 1 or
                 '  ingress:' in source):
             raise SetupError('Unknown CSC Compose network topology; refusing unsafe ingress modification.')
